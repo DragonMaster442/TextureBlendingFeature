@@ -5,55 +5,45 @@ using UnityEngine.Tilemaps;
 
 public class TilemapWithNoiseAndGrassShaderCreator : MonoBehaviour
 {
-    [SerializeField] private Tilemap _tilemap;
-    [SerializeField] private List<Texture2D> _uniqueTextures;
-    [SerializeField] private Texture2D[,] _tilemapInTextures;
-    [SerializeField] private Texture2D _tilemapTexturesIdInTexture;
-    [SerializeField] private SpriteRenderer _spriteWithShader;
-    [Range(0.01f, 3)]
-    [SerializeField] private float _falloffPower = 0.01f;
-    [Range(1, 2)]
-    [SerializeField] private float _fadeDistance = 1.5f;    
-    [SerializeField] private TextureNoiseRule[] _noiseRules;
-    [SerializeField] private int _tileResolution = 1024;
-    [SerializeField] private Texture2D _grassLayer1;
-    [Range(0, 1)]
-    [SerializeField] private float _grassLayer1Threshold = 0.75f;
-    [SerializeField] private GrassNoiseRule _grassLayer1NoiseRule;
-    [SerializeField] private Texture2D _grassLayer2;
-    [Range(0, 1)]
-    [SerializeField] private float _grassLayer2Threshold = 0.5f;
-    [SerializeField] private GrassNoiseRule _grassLayer2NoiseRule;
-    [SerializeField] private Texture2D _grassLayer3;
-    [Range(0, 1)]
-    [SerializeField] private float _grassLayer3Threshold = 0.25f;
-    [SerializeField] private GrassNoiseRule _grassLayer3NoiseRule;
-    [SerializeField] private int _grassBaseLayerID = 1;
-    [Range(0.5f, 10)]
-    [Tooltip("Меняет расположение заднего слоя травы относительно смежных тайлов")]
-    [SerializeField] private float _grassBaseLayerDenominator = 2;
-    private int _widthInTiles;
-    private int _heightInTiles;
-    private int _xMin;
-    private int _xMax;
-    private int _yMin;
-    private int _yMax;
-    private Material _material;
+    private const int MAX_TEXTURES = 32;
+    private const int MAX_OVERLAYS = 4;
 
+    [Header("Tilemap")]
+    [SerializeField] private Tilemap _tilemap;
+    [SerializeField] private SpriteRenderer _spriteWithShader;
+
+    [Header("Tile Resolution")]
+    [SerializeField] private int _tileResolution = 1024;
+
+    [Header("Shader blending")]
+    [Range(0.01f, 3)] [SerializeField] private float _falloffPower = 0.01f;
+    [Range(1, 2)]     [SerializeField] private float _fadeDistance = 1.5f;
+
+    [Header("Base Textures (Unique per tile type)")]
+    [SerializeField] private TextureNoiseRule[] _noiseRules;
+
+    [Header("Global overlay base params")]
+    [SerializeField] private int _grassBaseLayerID = 1;
+    [Range(0.5f, 10)] [SerializeField] private float _grassBaseLayerDenominator = 2;
+
+    private Texture2D[,] _tilemapInTextures;
+    private Texture2D _tilemapTexturesIdInTexture;
+    private Material _material;
+    private MaterialPropertyBlock _propertyBlock;
+    private int _widthInTiles, _heightInTiles;
+    private int _xMin, _xMax, _yMin, _yMax;
+    private List<Texture2D> _uniqueTextures = new List<Texture2D>();
+    private List<Texture2D> _uniqueOverlayTextures = new List<Texture2D>();
+    private Texture2DArray _overlayTexturesArray;
     public void LoadTextures()
     {
         InitData();
-
         int cols = _tilemapInTextures.GetLength(0);
         int rows = _tilemapInTextures.GetLength(1);
 
         Texture2DArray uniqueTexturesArray = CreateUniqueTexturesArray();
-        _tilemapTexturesIdInTexture = new Texture2D(
-            cols,
-            rows,
-            TextureFormat.RGBAFloat,
-            false
-        );
+
+        _tilemapTexturesIdInTexture = new Texture2D(cols, rows, TextureFormat.RGBAFloat, false);
         _tilemapTexturesIdInTexture.filterMode = FilterMode.Point;
         _tilemapTexturesIdInTexture.wrapMode = TextureWrapMode.Clamp;
 
@@ -61,260 +51,273 @@ public class TilemapWithNoiseAndGrassShaderCreator : MonoBehaviour
         {
             for (int x = 0; x < cols; x++)
             {
-                Texture2D texture = _tilemapInTextures[x, y];
-                if (texture != null)
+                Texture2D tex = _tilemapInTextures[x, y];
+                if (tex != null)
                 {
-                    for(int i = 0; i < _uniqueTextures.Count; i++)
-                    {
-                        if(texture == _uniqueTextures[i])
-                        {
-                            float textureIdInFloat = (float)i * 0.01f;
-                            Color pixel = new Color(textureIdInFloat, 0, 0, 1);
-                            _tilemapTexturesIdInTexture.SetPixel(x,y, pixel);
-                        }
-                    }
+                    int id = _uniqueTextures.IndexOf(tex);
+                    if (id >= 0)
+                        _tilemapTexturesIdInTexture.SetPixel(x, y, new Color(id * 0.01f, 0, 0, 1));
                 }
             }
         }
         _tilemapTexturesIdInTexture.Apply();
 
-        _material = _spriteWithShader.sharedMaterial;
-        _material = new Material(_material.shader);
+        BuildOverlayTextureArray();
+
+        if (_material == null)
+            _material = new Material(_spriteWithShader.sharedMaterial);
+        _spriteWithShader.sharedMaterial = _material;
         _spriteWithShader.gameObject.transform.localScale = new Vector3(cols, rows, 1);
+
         _material.SetInt("_Rows", rows);
         _material.SetInt("_Columns", cols);
         _material.SetInt("_UniqueTexturesCount", _uniqueTextures.Count);
         _material.SetTexture("_UniqueTextures", uniqueTexturesArray);
         _material.SetTexture("_TilemapInTexture", _tilemapTexturesIdInTexture);
-        _spriteWithShader.sharedMaterial = _material;
-        ChangeVolatileShaderParams();
+        _material.SetTexture("_OverlayTextures", _overlayTexturesArray);
+        _material.SetInt("_MaxOverlays", MAX_OVERLAYS);
+
+        if (_propertyBlock == null)
+            _propertyBlock = new MaterialPropertyBlock();
+        else
+            _propertyBlock.Clear();
+
+        UpdateDynamicShaderParams();
+
+        _spriteWithShader.SetPropertyBlock(_propertyBlock);
     }
-    void OnValidate()
+
+    private void OnValidate()
     {
-        if(_material == null)
+        if (_propertyBlock != null && _spriteWithShader != null)
         {
-            _material = _spriteWithShader.sharedMaterial;
+            UpdateDynamicShaderParams();
+            _spriteWithShader.SetPropertyBlock(_propertyBlock);
         }
-        ChangeVolatileShaderParams();
     }
     private void InitData()
     {
-        CalculateTilemapValues();
-
+        CalculateTilemapBounds();
         CheckTileResolution();
-
-        FindAllTextures();
+        CollectAllTexturesAndOverlays();
+        EnsureNoiseRulesLength();
     }
-    private void CalculateTilemapValues()
-    {
-        _xMin = int.MaxValue;
-        _xMax = int.MinValue;
-        _yMin = int.MaxValue;
-        _yMax = int.MinValue;
 
-        foreach (var position in _tilemap.cellBounds.allPositionsWithin)
+    private void CalculateTilemapBounds()
+    {
+        _xMin = _xMax = _yMin = _yMax = 0;
+        bool first = true;
+        foreach (var pos in _tilemap.cellBounds.allPositionsWithin)
         {
-            if (_tilemap.HasTile(position))
+            if (_tilemap.HasTile(pos))
             {
-                _xMin = Mathf.Min(_xMin, position.x);
-                _xMax = Mathf.Max(_xMax, position.x);
-                _yMin = Mathf.Min(_yMin, position.y);
-                _yMax = Mathf.Max(_yMax, position.y);
+                if (first)
+                {
+                    _xMin = _xMax = pos.x;
+                    _yMin = _yMax = pos.y;
+                    first = false;
+                }
+                else
+                {
+                    _xMin = Mathf.Min(_xMin, pos.x);
+                    _xMax = Mathf.Max(_xMax, pos.x);
+                    _yMin = Mathf.Min(_yMin, pos.y);
+                    _yMax = Mathf.Max(_yMax, pos.y);
+                }
             }
         }
-
         _widthInTiles = _xMax - _xMin + 1;
         _heightInTiles = _yMax - _yMin + 1;
-        return;
     }
+
     private void CheckTileResolution()
     {
-        Vector3Int firstTilePos = new Vector3Int(_xMin, _yMin, 0);
-        Sprite firstSprite = _tilemap.GetSprite(firstTilePos);
+        Vector3Int firstPos = new Vector3Int(_xMin, _yMin, 0);
+        Sprite firstSprite = _tilemap.GetSprite(firstPos);
         if (firstSprite != null && firstSprite.texture != null)
-        {
             _tileResolution = firstSprite.texture.width;
-        }
     }
-    private void FindAllTextures()
+
+    private void CollectAllTexturesAndOverlays()
     {
+        _uniqueTextures.Clear();
+        _uniqueOverlayTextures.Clear();
         _tilemapInTextures = new Texture2D[_widthInTiles, _heightInTiles];
-        for (int i = _xMin, column = 0; i <= _xMax; i++, column++)
+
+        for (int i = _xMin, col = 0; i <= _xMax; i++, col++)
         {
             for (int j = _yMin, row = 0; j <= _yMax; j++, row++)
             {
-                Vector3Int tilePos = new Vector3Int(i, j, 0);
-                Texture2D texture = _tilemap.GetSprite(tilePos).texture;
-                if (!_uniqueTextures.Contains(texture))
+                Vector3Int pos = new Vector3Int(i, j, 0);
+                Texture2D tex = _tilemap.GetSprite(pos)?.texture;
+                if (tex == null) continue;
+
+                if (!_uniqueTextures.Contains(tex))
+                    _uniqueTextures.Add(tex);
+                _tilemapInTextures[col, row] = tex;
+            }
+        }
+
+        if (_noiseRules != null)
+        {
+            foreach (var rule in _noiseRules)
+            {
+                if (rule != null && rule.overlays != null)
                 {
-                    _uniqueTextures.Add(texture);
+                    foreach (var ov in rule.overlays)
+                    {
+                        if (ov.overlayTexture != null && !_uniqueOverlayTextures.Contains(ov.overlayTexture))
+                            _uniqueOverlayTextures.Add(ov.overlayTexture);
+                    }
                 }
-                _tilemapInTextures[column, row] = texture;
             }
         }
-        InitNoiseRules();
     }
-    private void InitNoiseRules()
-    {
-        int noiseRulesCount = _noiseRules.GetLength(0);
-        if(noiseRulesCount < _uniqueTextures.Count)
-        {
-            TextureNoiseRule[] noiseRules = new TextureNoiseRule[_uniqueTextures.Count];
-            for(int i = 0; i < noiseRulesCount; i++)
-            {
-                noiseRules[i] = _noiseRules[i];
-            }
-            for(int i = noiseRulesCount; i < _uniqueTextures.Count;i++)
-            {
-                TextureNoiseRule newNoiseRule = new TextureNoiseRule();
-                noiseRules[i] = newNoiseRule;
-            }
-            _noiseRules = noiseRules;
-        }
 
-        for(int i = 0; i < _uniqueTextures.Count; i++)
+    private void EnsureNoiseRulesLength()
+    {
+        if (_noiseRules == null || _noiseRules.Length != _uniqueTextures.Count)
         {
+            var newRules = new TextureNoiseRule[_uniqueTextures.Count];
+            for (int i = 0; i < _uniqueTextures.Count; i++)
+            {
+                if (i < _noiseRules.Length && _noiseRules[i] != null)
+                    newRules[i] = _noiseRules[i];
+                else
+                    newRules[i] = new TextureNoiseRule();
+            }
+            _noiseRules = newRules;
+        }
+        for (int i = 0; i < _uniqueTextures.Count; i++)
             _noiseRules[i].Texture = _uniqueTextures[i];
-        }
     }
-    private void ChangeVolatileShaderParams()
-    {
-        _material.SetFloat("_FalloffPower", _falloffPower);
-        _material.SetFloat("_FadeDistance", _fadeDistance);
-        _material.SetTexture("_GrassLayer1", _grassLayer1);
-        _material.SetTexture("_GrassLayer2", _grassLayer2);
-        _material.SetTexture("_GrassLayer3", _grassLayer3);
-        _material.SetInt("_GrassBaseLayerID", _grassBaseLayerID);
-        _material.SetFloat("_GrassBaseLayerDenominator", _grassBaseLayerDenominator);
-        _material.SetFloat("_GrassLayer1Threshold", _grassLayer1Threshold);
-        _material.SetFloat("_GrassLayer2Threshold", _grassLayer2Threshold);
-        _material.SetFloat("_GrassLayer3Threshold", _grassLayer3Threshold);
-        SetShaderNoiseRules();
-        SetShaderGrassNoiseRules();
-    }
-    private void SetShaderNoiseRules()
-    {
-        int count = _noiseRules.Length;
 
-        float[] hueNoiseSizes = new float[count];
-        float[] huePositiveDeltas = new float[count];
-        float[] hueNegativeDeltas = new float[count];
-        float[] hueXOffsets = new float[count];
-        float[] hueYOffsets = new float[count];
-        float[] includeHue = new float[count];
-
-        float[] saturationNoiseSizes = new float[count];
-        float[] saturationPositiveDeltas = new float[count];
-        float[] saturationNegativeDeltas = new float[count];
-        float[] saturationXOffsets = new float[count];
-        float[] saturationYOffsets = new float[count];
-        float[] includeSaturation = new float[count];
-        
-        float[] brightnessNoiseSizes = new float[count];
-        float[] brightnessPositiveDeltas = new float[count];
-        float[] brightnessNegativeDeltas = new float[count];
-        float[] brightnessXOffsets = new float[count];
-        float[] brightnessYOffsets = new float[count];
-        float[] includeBrightness = new float[count];
-        
-        for (int i = 0; i < count; i++)
-        {
-            NoiseRule hueNoiseRule = _noiseRules[i].HueNoiseRule;
-            hueNoiseSizes[i] = hueNoiseRule.NoiseSize;
-            huePositiveDeltas[i] = hueNoiseRule.PositiveDelta;
-            hueNegativeDeltas[i] = hueNoiseRule.NegativeDelta;
-            hueXOffsets[i] = hueNoiseRule.XOffset;
-            hueYOffsets[i] = hueNoiseRule.YOffset;
-            includeHue[i] = _noiseRules[i].IncludeHue ? 1f : 0f;
-
-            NoiseRule saturationNoiseRule = _noiseRules[i].SaturationNoiseRule;
-            saturationNoiseSizes[i] = saturationNoiseRule.NoiseSize;
-            saturationPositiveDeltas[i] = saturationNoiseRule.PositiveDelta;
-            saturationNegativeDeltas[i] = saturationNoiseRule.NegativeDelta;
-            saturationXOffsets[i] = saturationNoiseRule.XOffset;
-            saturationYOffsets[i] = saturationNoiseRule.YOffset;
-            includeSaturation[i] = _noiseRules[i].IncludeSaturation ? 1f : 0f;
-
-            NoiseRule brightnessNoiseRule = _noiseRules[i].BrightnessNoiseRule;
-            brightnessNoiseSizes[i] = brightnessNoiseRule.NoiseSize;
-            brightnessPositiveDeltas[i] = brightnessNoiseRule.PositiveDelta;
-            brightnessNegativeDeltas[i] = brightnessNoiseRule.NegativeDelta;
-            brightnessXOffsets[i] = brightnessNoiseRule.XOffset;
-            brightnessYOffsets[i] = brightnessNoiseRule.YOffset;
-            includeBrightness[i] = _noiseRules[i].IncludeBrightness ? 1f : 0f;
-        }
-
-        _material.SetInt("_NoiseRulesCount", count);
-
-        _material.SetFloatArray("_HueNoiseSizes", hueNoiseSizes);
-        _material.SetFloatArray("_HuePositiveDeltas", huePositiveDeltas);
-        _material.SetFloatArray("_HueNegativeDeltas", hueNegativeDeltas);
-        _material.SetFloatArray("_HueXOffsets", hueXOffsets);
-        _material.SetFloatArray("_HueYOffsets", hueYOffsets);
-        _material.SetFloatArray("_IncludeHue", includeHue);
-
-        _material.SetFloatArray("_SaturationNoiseSizes", saturationNoiseSizes);
-        _material.SetFloatArray("_SaturationPositiveDeltas", saturationPositiveDeltas);
-        _material.SetFloatArray("_SaturationNegativeDeltas", saturationNegativeDeltas);
-        _material.SetFloatArray("_SaturationXOffsets", saturationXOffsets);
-        _material.SetFloatArray("_SaturationYOffsets", saturationYOffsets);
-        _material.SetFloatArray("_IncludeSaturation", includeSaturation);
-
-        _material.SetFloatArray("_BrightnessNoiseSizes", brightnessNoiseSizes);
-        _material.SetFloatArray("_BrightnessPositiveDeltas", brightnessPositiveDeltas);
-        _material.SetFloatArray("_BrightnessNegativeDeltas", brightnessNegativeDeltas);
-        _material.SetFloatArray("_BrightnessXOffsets", brightnessXOffsets);
-        _material.SetFloatArray("_BrightnessYOffsets", brightnessYOffsets);
-        _material.SetFloatArray("_IncludeBrightness", includeBrightness);
-    }
-    private void SetShaderGrassNoiseRules()
-    {
-        _material.SetFloat("_GrassLayer1NoiseSize", _grassLayer1NoiseRule.NoiseSize);
-        _material.SetFloat("_GrassLayer1NoiseThreshold", _grassLayer1NoiseRule.Threshold);
-        _material.SetFloat("_GrassLayer1NoiseXOffset", _grassLayer1NoiseRule.XOffset);
-        _material.SetFloat("_GrassLayer1NoiseYOffset", _grassLayer1NoiseRule.YOffset);
-
-        _material.SetFloat("_GrassLayer2NoiseSize", _grassLayer2NoiseRule.NoiseSize);
-        _material.SetFloat("_GrassLayer2NoiseThreshold", _grassLayer2NoiseRule.Threshold);
-        _material.SetFloat("_GrassLayer2NoiseXOffset", _grassLayer2NoiseRule.XOffset);
-        _material.SetFloat("_GrassLayer2NoiseYOffset", _grassLayer2NoiseRule.YOffset);
-
-        _material.SetFloat("_GrassLayer3NoiseSize", _grassLayer3NoiseRule.NoiseSize);
-        _material.SetFloat("_GrassLayer3NoiseThreshold", _grassLayer3NoiseRule.Threshold);
-        _material.SetFloat("_GrassLayer3NoiseXOffset", _grassLayer3NoiseRule.XOffset);
-        _material.SetFloat("_GrassLayer3NoiseYOffset", _grassLayer3NoiseRule.YOffset);
-    }
     private Texture2DArray CreateUniqueTexturesArray()
     {
-        Texture2DArray uniqueTexturesArray = new Texture2DArray(
-            _tileResolution, _tileResolution,
-            _uniqueTextures.Count,
-            TextureFormat.RGBA32,
-            false
-        );
-        for(int i = 0; i < _uniqueTextures.Count;i++)
-        {
-            uniqueTexturesArray.SetPixels(_uniqueTextures[i].GetPixels(), i);
-        }
-        uniqueTexturesArray.Apply();
-        return uniqueTexturesArray;
+        var arr = new Texture2DArray(_tileResolution, _tileResolution, _uniqueTextures.Count, TextureFormat.RGBA32, false);
+        for (int i = 0; i < _uniqueTextures.Count; i++)
+            arr.SetPixels(_uniqueTextures[i].GetPixels(), i);
+        arr.Apply();
+        return arr;
     }
-}
 
-[Serializable]
-public struct GrassNoiseRule
-{
-    [Range(0.1f, 10)]
-    public float NoiseSize;
-    [Range(0, 1)]
-    public float Threshold;
-    public float XOffset;
-    public float YOffset;
-    public GrassNoiseRule(float noiseSize = 1, float threshold = 0.1f, float xOffset = 0, float yOffset = 0)
+    private void BuildOverlayTextureArray()
     {
-        NoiseSize = noiseSize;
-        Threshold = threshold;
-        XOffset = xOffset;
-        YOffset = yOffset;
+        if (_uniqueOverlayTextures.Count == 0)
+        {
+            _overlayTexturesArray = new Texture2DArray(1, 1, 1, TextureFormat.RGBA32, false);
+            _overlayTexturesArray.SetPixels(new Color[] { Color.clear }, 0);
+            _overlayTexturesArray.Apply();
+            return;
+        }
+
+        _overlayTexturesArray = new Texture2DArray(_tileResolution, _tileResolution, _uniqueOverlayTextures.Count, TextureFormat.RGBA32, false);
+        for (int i = 0; i < _uniqueOverlayTextures.Count; i++)
+            _overlayTexturesArray.SetPixels(_uniqueOverlayTextures[i].GetPixels(), i);
+        _overlayTexturesArray.Apply();
+    }
+
+    private void UpdateDynamicShaderParams()
+    {
+        if (_propertyBlock == null) return;
+
+        _propertyBlock.SetFloat("_FalloffPower", _falloffPower);
+        _propertyBlock.SetFloat("_FadeDistance", _fadeDistance);
+        _propertyBlock.SetInt("_GrassBaseLayerID", _grassBaseLayerID);
+        _propertyBlock.SetFloat("_GrassBaseLayerDenominator", _grassBaseLayerDenominator);
+
+        SetShaderNoiseRules(); 
+        SetShaderOverlayRules();
+    }
+
+    private void SetShaderNoiseRules()
+    {
+        int count = Mathf.Min(_uniqueTextures.Count, MAX_TEXTURES);
+        _propertyBlock.SetInt("_NoiseRulesCount", count);
+
+        Vector4[] hueData0 = new Vector4[MAX_TEXTURES];
+        Vector4[] hueData1 = new Vector4[MAX_TEXTURES];
+        Vector4[] satData0 = new Vector4[MAX_TEXTURES];
+        Vector4[] satData1 = new Vector4[MAX_TEXTURES];
+        Vector4[] brightData0 = new Vector4[MAX_TEXTURES];
+        Vector4[] brightData1 = new Vector4[MAX_TEXTURES];
+
+        for (int i = 0; i < MAX_TEXTURES; i++)
+        {
+            if (i < count && _noiseRules[i] != null)
+            {
+                var rule = _noiseRules[i];
+                // Hue
+                hueData0[i] = new Vector4(rule.HueNoiseRule.NoiseSize, rule.HueNoiseRule.PositiveDelta, rule.HueNoiseRule.NegativeDelta, rule.HueNoiseRule.XOffset);
+                hueData1[i] = new Vector4(rule.HueNoiseRule.YOffset, rule.IncludeHue ? 1f : 0f, 0, 0);
+                // Saturation
+                satData0[i] = new Vector4(rule.SaturationNoiseRule.NoiseSize, rule.SaturationNoiseRule.PositiveDelta, rule.SaturationNoiseRule.NegativeDelta, rule.SaturationNoiseRule.XOffset);
+                satData1[i] = new Vector4(rule.SaturationNoiseRule.YOffset, rule.IncludeSaturation ? 1f : 0f, 0, 0);
+                // Brightness
+                brightData0[i] = new Vector4(rule.BrightnessNoiseRule.NoiseSize, rule.BrightnessNoiseRule.PositiveDelta, rule.BrightnessNoiseRule.NegativeDelta, rule.BrightnessNoiseRule.XOffset);
+                brightData1[i] = new Vector4(rule.BrightnessNoiseRule.YOffset, rule.IncludeBrightness ? 1f : 0f, 0, 0);
+            }
+            else
+            {
+                hueData0[i] = Vector4.zero;
+                hueData1[i] = Vector4.zero;
+                satData0[i] = Vector4.zero;
+                satData1[i] = Vector4.zero;
+                brightData0[i] = Vector4.zero;
+                brightData1[i] = Vector4.zero;
+            }
+        }
+
+        _propertyBlock.SetVectorArray("_HueData", hueData0);
+        _propertyBlock.SetVectorArray("_HueData2", hueData1);
+        _propertyBlock.SetVectorArray("_SatData", satData0);
+        _propertyBlock.SetVectorArray("_SatData2", satData1);
+        _propertyBlock.SetVectorArray("_BrightData", brightData0);
+        _propertyBlock.SetVectorArray("_BrightData2", brightData1);
+    }
+
+    private void SetShaderOverlayRules()
+    {
+        int totalEntries = MAX_TEXTURES * MAX_OVERLAYS;
+        Vector4[] overlayThresholds = new Vector4[totalEntries];
+        Vector4[] overlayNoiseData = new Vector4[totalEntries];
+        int[] overlayCounts = new int[MAX_TEXTURES];
+        int[] overlayTextureIndices = new int[totalEntries];
+
+        // Словарь текстура -> индекс в _overlayTexturesArray
+        Dictionary<Texture2D, int> texToIndex = new Dictionary<Texture2D, int>();
+        for (int i = 0; i < _uniqueOverlayTextures.Count; i++)
+            texToIndex[_uniqueOverlayTextures[i]] = i;
+
+        for (int texId = 0; texId < MAX_TEXTURES; texId++)
+        {
+            if (texId >= _uniqueTextures.Count || _noiseRules[texId] == null)
+            {
+                overlayCounts[texId] = 0;
+                continue;
+            }
+
+            var overlays = _noiseRules[texId].overlays;
+            int cnt = (overlays != null) ? Mathf.Min(overlays.Length, MAX_OVERLAYS) : 0;
+            overlayCounts[texId] = cnt;
+
+            for (int l = 0; l < cnt; l++)
+            {
+                int idx = texId * MAX_OVERLAYS + l;
+                var ov = overlays[l];
+                overlayThresholds[idx] = new Vector4(ov.threshold, 0, 0, 0);
+                overlayNoiseData[idx] = new Vector4(ov.noiseRule.NoiseSize, ov.noiseRule.Threshold, ov.noiseRule.XOffset, ov.noiseRule.YOffset);
+                overlayTextureIndices[idx] = texToIndex.GetValueOrDefault(ov.overlayTexture, 0);
+            }
+        }
+
+        // Преобразуем int[] в float[] для совместимости с SetFloatArray
+        float[] overlayCountsFloat = Array.ConvertAll(overlayCounts, v => (float)v);
+        float[] overlayTextureIndicesFloat = Array.ConvertAll(overlayTextureIndices, v => (float)v);
+
+        _propertyBlock.SetFloatArray("_OverlayCounts", overlayCountsFloat);
+        _propertyBlock.SetVectorArray("_OverlayThresholds", overlayThresholds);
+        _propertyBlock.SetVectorArray("_OverlayNoiseData", overlayNoiseData);
+        _propertyBlock.SetFloatArray("_OverlayTextureIndices", overlayTextureIndicesFloat);
     }
 }
