@@ -277,6 +277,26 @@ Shader "Unlit/TilemapWithOverlay"
                     }
                 }
 
+                // Сортировка уникальных текстур по убыванию texId (от большего к меньшему)
+                // Это гарантирует, что оверлеи от текстур с меньшим индексом будут накладываться поверх.
+                for (int index = 0; index < uniqueCount - 1; index++)
+                {
+                    for (int j = index + 1; j < uniqueCount; j++)
+                    {
+                        if (uniqueTexIds[index] < uniqueTexIds[j])
+                        {
+                            // swap texId
+                            int tempId = uniqueTexIds[index];
+                            uniqueTexIds[index] = uniqueTexIds[j];
+                            uniqueTexIds[j] = tempId;
+                            // swap intensity
+                            float tempInt = uniqueIntensities[index];
+                            uniqueIntensities[index] = uniqueIntensities[j];
+                            uniqueIntensities[j] = tempInt;
+                        }
+                    }
+                }
+
                 // Смешиваем базовые цвета по суммарным интенсивностям
                 float totalIntensity = 0.0;
                 float4 blendedColor = float4(0, 0, 0, 0);
@@ -298,10 +318,12 @@ Shader "Unlit/TilemapWithOverlay"
                 float4 finalColor = blendedColor;
 
                 // Второй проход: накладываем оверлеи для каждой уникальной текстуры, используя суммарную интенсивность
+                // Поскольку массив отсортирован по убыванию texId, сначала будут наложены оверлеи от текстур с большим индексом (нижние),
+                // а затем от текстур с меньшим индексом (верхние), что соответствует требованию: текстура с индексом 0 поверх всех.
                 for (int j = 0; j < uniqueCount; j++)
                 {
                     int texId = uniqueTexIds[j];
-                    float intensity = uniqueIntensities[j]/totalIntensity;
+                    float intensity = uniqueIntensities[j] / totalIntensity;
                     finalColor = ApplyOverlays(finalColor, tileUV, i.uv, texId, intensity);
                 }
 

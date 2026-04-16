@@ -22,10 +22,6 @@ public class TilemapWithNoiseAndGrassShaderCreator : MonoBehaviour
     [Header("Base Textures (Unique per tile type)")]
     [SerializeField] private TextureNoiseRule[] _noiseRules;
 
-    [Header("Global overlay base params")]
-    [SerializeField] private int _grassBaseLayerID = 1;
-    [Range(0.5f, 10)] [SerializeField] private float _grassBaseLayerDenominator = 2;
-
     private Texture2D[,] _tilemapInTextures;
     private Texture2D _tilemapTexturesIdInTexture;
     private Material _material;
@@ -35,6 +31,9 @@ public class TilemapWithNoiseAndGrassShaderCreator : MonoBehaviour
     private List<Texture2D> _uniqueTextures = new List<Texture2D>();
     private List<Texture2D> _uniqueOverlayTextures = new List<Texture2D>();
     private Texture2DArray _overlayTexturesArray;
+
+    private bool _isReordering = false;  // Защита от рекурсии
+
     public void LoadTextures()
     {
         InitData();
@@ -47,6 +46,7 @@ public class TilemapWithNoiseAndGrassShaderCreator : MonoBehaviour
         _tilemapTexturesIdInTexture.filterMode = FilterMode.Point;
         _tilemapTexturesIdInTexture.wrapMode = TextureWrapMode.Clamp;
 
+        // Заполняем карту идентификаторов
         for (int y = 0; y < rows; y++)
         {
             for (int x = 0; x < cols; x++)
@@ -83,18 +83,24 @@ public class TilemapWithNoiseAndGrassShaderCreator : MonoBehaviour
             _propertyBlock.Clear();
 
         UpdateDynamicShaderParams();
-
         _spriteWithShader.SetPropertyBlock(_propertyBlock);
     }
 
     private void OnValidate()
     {
+        if (_isReordering) return;
         if (_propertyBlock != null && _spriteWithShader != null)
         {
+            // Если тайлмапа уже загружена и размеры совпадают, переупорядочиваем текстуры согласно правилам
+            if (_uniqueTextures.Count > 0 && _noiseRules != null && _noiseRules.Length == _uniqueTextures.Count)
+            {
+                ReorderTexturesByRules();
+            }
             UpdateDynamicShaderParams();
             _spriteWithShader.SetPropertyBlock(_propertyBlock);
         }
     }
+
     private void InitData()
     {
         CalculateTilemapBounds();
@@ -140,8 +146,7 @@ public class TilemapWithNoiseAndGrassShaderCreator : MonoBehaviour
 
     private void CollectAllTexturesAndOverlays()
     {
-        _uniqueTextures.Clear();
-        _uniqueOverlayTextures.Clear();
+        // Не очищаем _uniqueTextures и _uniqueOverlayTextures, а только дополняем
         _tilemapInTextures = new Texture2D[_widthInTiles, _heightInTiles];
 
         for (int i = _xMin, col = 0; i <= _xMax; i++, col++)
@@ -176,18 +181,23 @@ public class TilemapWithNoiseAndGrassShaderCreator : MonoBehaviour
 
     private void EnsureNoiseRulesLength()
     {
-        if (_noiseRules == null || _noiseRules.Length != _uniqueTextures.Count)
+        int neededLength = _uniqueTextures.Count;
+        if (_noiseRules == null)
         {
-            var newRules = new TextureNoiseRule[_uniqueTextures.Count];
-            for (int i = 0; i < _uniqueTextures.Count; i++)
-            {
-                if (i < _noiseRules.Length && _noiseRules[i] != null)
-                    newRules[i] = _noiseRules[i];
-                else
-                    newRules[i] = new TextureNoiseRule();
-            }
+            _noiseRules = new TextureNoiseRule[neededLength];
+            for (int i = 0; i < neededLength; i++)
+                _noiseRules[i] = new TextureNoiseRule();
+        }
+        else if (_noiseRules.Length != neededLength)
+        {
+            var newRules = new TextureNoiseRule[neededLength];
+            for (int i = 0; i < Mathf.Min(_noiseRules.Length, neededLength); i++)
+                newRules[i] = _noiseRules[i] ?? new TextureNoiseRule();
+            for (int i = _noiseRules.Length; i < neededLength; i++)
+                newRules[i] = new TextureNoiseRule();
             _noiseRules = newRules;
         }
+
         for (int i = 0; i < _uniqueTextures.Count; i++)
             _noiseRules[i].Texture = _uniqueTextures[i];
     }
@@ -223,10 +233,8 @@ public class TilemapWithNoiseAndGrassShaderCreator : MonoBehaviour
 
         _propertyBlock.SetFloat("_FalloffPower", _falloffPower);
         _propertyBlock.SetFloat("_FadeDistance", _fadeDistance);
-        _propertyBlock.SetInt("_GrassBaseLayerID", _grassBaseLayerID);
-        _propertyBlock.SetFloat("_GrassBaseLayerDenominator", _grassBaseLayerDenominator);
 
-        SetShaderNoiseRules(); 
+        SetShaderNoiseRules();
         SetShaderOverlayRules();
     }
 
@@ -247,13 +255,10 @@ public class TilemapWithNoiseAndGrassShaderCreator : MonoBehaviour
             if (i < count && _noiseRules[i] != null)
             {
                 var rule = _noiseRules[i];
-                // Hue
                 hueData0[i] = new Vector4(rule.HueNoiseRule.NoiseSize, rule.HueNoiseRule.PositiveDelta, rule.HueNoiseRule.NegativeDelta, rule.HueNoiseRule.XOffset);
                 hueData1[i] = new Vector4(rule.HueNoiseRule.YOffset, rule.IncludeHue ? 1f : 0f, 0, 0);
-                // Saturation
                 satData0[i] = new Vector4(rule.SaturationNoiseRule.NoiseSize, rule.SaturationNoiseRule.PositiveDelta, rule.SaturationNoiseRule.NegativeDelta, rule.SaturationNoiseRule.XOffset);
                 satData1[i] = new Vector4(rule.SaturationNoiseRule.YOffset, rule.IncludeSaturation ? 1f : 0f, 0, 0);
-                // Brightness
                 brightData0[i] = new Vector4(rule.BrightnessNoiseRule.NoiseSize, rule.BrightnessNoiseRule.PositiveDelta, rule.BrightnessNoiseRule.NegativeDelta, rule.BrightnessNoiseRule.XOffset);
                 brightData1[i] = new Vector4(rule.BrightnessNoiseRule.YOffset, rule.IncludeBrightness ? 1f : 0f, 0, 0);
             }
@@ -284,7 +289,6 @@ public class TilemapWithNoiseAndGrassShaderCreator : MonoBehaviour
         int[] overlayCounts = new int[MAX_TEXTURES];
         int[] overlayTextureIndices = new int[totalEntries];
 
-        // Словарь текстура -> индекс в _overlayTexturesArray
         Dictionary<Texture2D, int> texToIndex = new Dictionary<Texture2D, int>();
         for (int i = 0; i < _uniqueOverlayTextures.Count; i++)
             texToIndex[_uniqueOverlayTextures[i]] = i;
@@ -311,7 +315,6 @@ public class TilemapWithNoiseAndGrassShaderCreator : MonoBehaviour
             }
         }
 
-        // Преобразуем int[] в float[] для совместимости с SetFloatArray
         float[] overlayCountsFloat = Array.ConvertAll(overlayCounts, v => (float)v);
         float[] overlayTextureIndicesFloat = Array.ConvertAll(overlayTextureIndices, v => (float)v);
 
@@ -319,5 +322,82 @@ public class TilemapWithNoiseAndGrassShaderCreator : MonoBehaviour
         _propertyBlock.SetVectorArray("_OverlayThresholds", overlayThresholds);
         _propertyBlock.SetVectorArray("_OverlayNoiseData", overlayNoiseData);
         _propertyBlock.SetFloatArray("_OverlayTextureIndices", overlayTextureIndicesFloat);
+    }
+
+    // ========== НОВЫЕ МЕТОДЫ ДЛЯ ПЕРЕУПОРЯДОЧИВАНИЯ ==========
+    private void ReorderTexturesByRules()
+    {
+        // Проверяем, нужно ли переупорядочивать
+        bool needReorder = false;
+        for (int i = 0; i < _noiseRules.Length; i++)
+        {
+            if (_noiseRules[i].Texture != _uniqueTextures[i])
+            {
+                needReorder = true;
+                break;
+            }
+        }
+        if (!needReorder) return;
+
+        _isReordering = true;
+
+        // Строим новый список текстур в порядке правил
+        List<Texture2D> newUniqueTextures = new List<Texture2D>();
+        for (int i = 0; i < _noiseRules.Length; i++)
+        {
+            Texture2D tex = _noiseRules[i].Texture;
+            if (tex != null && !newUniqueTextures.Contains(tex))
+                newUniqueTextures.Add(tex);
+            else if (tex == null)
+                Debug.LogWarning("Texture is null in noise rule at index " + i);
+        }
+        // Добавляем недостающие текстуры (если какие-то из старого списка отсутствуют в правилах)
+        foreach (var tex in _uniqueTextures)
+        {
+            if (!newUniqueTextures.Contains(tex))
+                newUniqueTextures.Add(tex);
+        }
+        _uniqueTextures = newUniqueTextures;
+
+        // Обновляем карту идентификаторов тайлов
+        UpdateTextureIdMap();
+
+        // Пересоздаём Texture2DArray для уникальных текстур
+        Texture2DArray uniqueTexturesArray = CreateUniqueTexturesArray();
+        _material.SetTexture("_UniqueTextures", uniqueTexturesArray);
+        _material.SetInt("_UniqueTexturesCount", _uniqueTextures.Count);
+
+        // Привязываем правильные текстуры к правилам
+        for (int i = 0; i < _noiseRules.Length; i++)
+        {
+            _noiseRules[i].Texture = _uniqueTextures[i];
+        }
+
+        // Обновляем шейдерные данные
+        SetShaderNoiseRules();
+        SetShaderOverlayRules();
+
+        _isReordering = false;
+    }
+
+    private void UpdateTextureIdMap()
+    {
+        if (_tilemapTexturesIdInTexture == null) return;
+        int cols = _tilemapTexturesIdInTexture.width;
+        int rows = _tilemapTexturesIdInTexture.height;
+        for (int y = 0; y < rows; y++)
+        {
+            for (int x = 0; x < cols; x++)
+            {
+                Texture2D tex = _tilemapInTextures[x, y];
+                if (tex != null)
+                {
+                    int id = _uniqueTextures.IndexOf(tex);
+                    if (id >= 0)
+                        _tilemapTexturesIdInTexture.SetPixel(x, y, new Color(id * 0.01f, 0, 0, 1));
+                }
+            }
+        }
+        _tilemapTexturesIdInTexture.Apply();
     }
 }
