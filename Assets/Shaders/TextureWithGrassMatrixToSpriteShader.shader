@@ -128,9 +128,10 @@ Shader "Unlit/TilemapWithOverlay"
                 float maxDistance = _TileResolution * _FadeDistance;
                 float2 neighborCenter = textureCenterPos + float2(offsetX * _TileResolution, offsetY * _TileResolution);
                 float distance = length(neighborCenter - globalPixelPos);
-                float normalizedDistance = distance / maxDistance;
-                float value = 1.0 - pow(normalizedDistance, _FalloffPower);
-                return clamp(value, 0.0, 1.0);
+                float normalized = distance / maxDistance;
+                // exp(-k * normalized²), где k = _FalloffPower * 4 (чтобы на границе было ~0)
+                float k = _FalloffPower * 4.0;
+                return exp(-k * normalized * normalized);
             }
 
             float3 rgb2hsv(float3 c)
